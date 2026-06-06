@@ -1,0 +1,44 @@
+# Android / Gradle build outputs
+**/build/
+**/.gradle/
+**/.gradle-home/
+**/.kotlin/
+**/captures/
+**/.cxx/
+**/.externalNativeBuild/
+**/out/
+**/intermediates/
+**/generated/
+
+# Local Android toolchains and SDKs
+**/.android-sdk/
+**/.gradle-dist/
+**/.jdk/
+**/*.tar.gz
+**/*.zip
+
+# IDE and local machine files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Local configuration and secrets
+**/local.properties
+**/.env
+**/.env.*
+!**/.env.example
+**/google-services.json
+**/*.keystore
+**/*.jks
+**/keystore.properties
+
+# Kotlin / Java transient files
+*.class
+*.log
+hs_err_pid*
+
+# Android packaged artifacts
+*.apk
+*.ap_
+*.aab

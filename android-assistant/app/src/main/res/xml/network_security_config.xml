@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        ODISS ai-server는 내부망(LAN)에서 평문 HTTP/WS로 동작한다.
+        실기기는 임의의 LAN IP(예: 192.168.x.x)를 향할 수 있으므로 평문 트래픽을
+        허용한다. 외부 공개 배포 시에는 TLS 종단(HTTPS/WSS)로 전환할 것.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>
