@@ -4,13 +4,13 @@ plugins {
 }
 
 // 서버 주소/토큰은 Gradle property로 주입한다. 우선순위:
-//   -P 인자 > gradle.properties / ~/.gradle/gradle.properties > 아래 기본값(에뮬레이터)
-// 실기기에서는 `-PodissHttpBaseUrl=http://192.168.0.12:8000` 처럼 LAN IP를 넘긴다.
+//   -P 인자 > gradle.properties / ~/.gradle/gradle.properties > 아래 기본값(운영 도메인)
+// 에뮬레이터 테스트는 `-PodissHttpBaseUrl=http://10.0.2.2:8000` 처럼 덮어쓴다.
 fun odissProp(name: String, fallback: String): String =
     (project.findProperty(name) as String?)?.trim()?.ifEmpty { fallback } ?: fallback
 
-val odissHttpBaseUrl = odissProp("odissHttpBaseUrl", "http://10.0.2.2:8000")
-val odissWsBaseUrl = odissProp("odissWsBaseUrl", "ws://10.0.2.2:8000/ws/chat")
+val odissHttpBaseUrl = odissProp("odissHttpBaseUrl", "https://odiss.p-e.kr")
+val odissWsBaseUrl = odissProp("odissWsBaseUrl", "wss://odiss.p-e.kr/ws/chat")
 val odissSpeakerId = odissProp("odissSpeakerId", "android_default")
 val odissWsToken = odissProp("odissWsToken", "")
 

@@ -1,8 +1,10 @@
 package com.odiss.assistant.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -24,6 +26,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -49,8 +52,11 @@ import com.odiss.assistant.assistant.ChatLine
 import com.odiss.assistant.assistant.ConnectionState
 import com.odiss.assistant.audio.SttController
 import com.odiss.assistant.audio.TtsController
+import com.odiss.assistant.capture.CaptureActivity
+import com.odiss.assistant.core.AssistantPreferences
 import com.odiss.assistant.model.MedicationInput
 import com.odiss.assistant.ocr.OcrTextExtractor
+import com.odiss.assistant.service.HandsFreeService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -84,6 +90,12 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted -> hasCameraPermission = granted }
+
+    val prefs = remember { AssistantPreferences(context) }
+    var handsFreeOn by remember { mutableStateOf(prefs.handsFreeEnabled) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { /* 알림 권한 결과는 서비스 동작에 필수는 아니므로 무시 */ }
 
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
@@ -130,6 +142,27 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
             onRetry = { viewModel.refreshHealth() },
         )
 
+        HandsFreeCard(
+            enabled = handsFreeOn,
+            onToggle = { turnOn ->
+                if (turnOn) {
+                    if (!hasAudioPermission) {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    handsFreeOn = true
+                    prefs.handsFreeEnabled = true
+                    HandsFreeService.start(context)
+                } else {
+                    handsFreeOn = false
+                    prefs.handsFreeEnabled = false
+                    HandsFreeService.stop(context)
+                }
+            },
+        )
+
         state.errorText?.let { error ->
             ErrorCard(message = error, onRetry = { viewModel.refreshHealth() }, onDismiss = { viewModel.dismissError() })
         }
@@ -156,6 +189,17 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
                 val text = stt.listenOnce().first()
                 viewModel.onSttTextRecognized(text, tts)
             }
+        }
+
+        BigActionButton(
+            label = "약 직접 촬영 (카메라)",
+            enabled = !state.busy,
+            container = Color(0xFF00695C),
+        ) {
+            if (!hasCameraPermission) {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+            context.startActivity(Intent(context, CaptureActivity::class.java))
         }
 
         BigActionButton(
@@ -220,6 +264,38 @@ private fun ConnectionCard(
             if (connection != ConnectionState.CHECKING) {
                 OutlinedButton(onClick = onRetry) { Text("재연결") }
             }
+        }
+    }
+}
+
+@Composable
+private fun HandsFreeCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (enabled) Color(0xFFE8F5E9) else Color(0xFFF5F5F5),
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("핸즈프리 음성비서", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (enabled) {
+                        "켜짐 · ‘오디스’라고 부른 뒤 말씀하세요. 앱을 닫아도 동작합니다."
+                    } else {
+                        "꺼짐 · 켜면 상시 음성 인식과 자동 응답이 시작됩니다."
+                    },
+                    fontSize = 13.sp,
+                    color = Color(0xFF555555),
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onToggle)
         }
     }
 }
