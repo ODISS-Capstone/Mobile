@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <!--
-        운영 기본값은 https://odiss.p-e.kr / wss://odiss.p-e.kr 이다.
+        운영 기본값은 https://www.odiss.p-e.kr / wss://www.odiss.p-e.kr 이다.
         개발 중 에뮬레이터/LAN HTTP 테스트도 가능하게 평문 트래픽을 허용한다.
     -->
     <base-config cleartextTrafficPermitted="true" />
@@ -9,5 +9,6 @@
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">odiss.p-e.kr</domain>
+        <domain includeSubdomains="true">www.odiss.p-e.kr</domain>
     </domain-config>
 </network-security-config>

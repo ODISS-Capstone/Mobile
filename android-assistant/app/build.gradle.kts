@@ -9,8 +9,8 @@ plugins {
 fun odissProp(name: String, fallback: String): String =
     (project.findProperty(name) as String?)?.trim()?.ifEmpty { fallback } ?: fallback
 
-val odissHttpBaseUrl = odissProp("odissHttpBaseUrl", "https://odiss.p-e.kr")
-val odissWsBaseUrl = odissProp("odissWsBaseUrl", "wss://odiss.p-e.kr/ws/chat")
+val odissHttpBaseUrl = odissProp("odissHttpBaseUrl", "https://www.odiss.p-e.kr")
+val odissWsBaseUrl = odissProp("odissWsBaseUrl", "wss://www.odiss.p-e.kr/ws/chat")
 val odissSpeakerId = odissProp("odissSpeakerId", "android_default")
 val odissWsToken = odissProp("odissWsToken", "")
 

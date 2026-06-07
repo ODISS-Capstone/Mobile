@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class ConnectionState { CHECKING, ONLINE, OFFLINE }
@@ -21,6 +23,7 @@ data class AssistantUiState(
     val serverLabel: String = "",
     val status: String = "준비 중",
     val busy: Boolean = false,
+    val speaking: Boolean = false,
     val awaitingOcr: Boolean = false,
     val lastSpokenText: String = "",
     val messages: List<ChatLine> = emptyList(),
@@ -32,25 +35,67 @@ class AssistantViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AssistantUiState(serverLabel = repository.serverLabel))
     val uiState: StateFlow<AssistantUiState> = _uiState.asStateFlow()
+    private var reconnectJob: Job? = null
 
     init {
         refreshHealth()
     }
 
-    /** 서버 연결 상태 확인 (앱 시작 / 재시도 버튼). */
+    /** 서버 연결 상태 확인 (앱 시작 / 재시도 버튼 / 자동 재연결). */
     fun refreshHealth() {
-        _uiState.value = _uiState.value.copy(
-            connection = ConnectionState.CHECKING,
-            status = "서버 연결 확인 중",
-            errorText = null,
-        )
+        checkHealth(showChecking = true)
+    }
+
+    private fun checkHealth(showChecking: Boolean) {
+        if (showChecking) {
+            _uiState.value = _uiState.value.copy(
+                connection = ConnectionState.CHECKING,
+                status = "서버 연결 확인 중",
+                errorText = null,
+            )
+        }
         viewModelScope.launch {
             val ok = repository.checkHealth()
-            _uiState.value = _uiState.value.copy(
-                connection = if (ok) ConnectionState.ONLINE else ConnectionState.OFFLINE,
-                status = if (ok) "대기 중" else "서버에 연결할 수 없습니다",
-                errorText = if (ok) null else "서버(${repository.serverLabel})에 연결하지 못했습니다. 주소와 네트워크를 확인해 주세요.",
-            )
+            onHealthResult(ok)
+        }
+    }
+
+    private fun onHealthResult(ok: Boolean) {
+        _uiState.value = _uiState.value.copy(
+            connection = if (ok) ConnectionState.ONLINE else ConnectionState.OFFLINE,
+            status = if (ok) "대기 중" else "서버 재연결 시도 중",
+            errorText = if (ok) null else "서버(${repository.serverLabel})에 연결하지 못했습니다. 자동으로 다시 연결을 시도합니다.",
+        )
+        if (ok) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+        } else {
+            startAutoReconnect()
+        }
+    }
+
+    private fun startAutoReconnect() {
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = viewModelScope.launch {
+            var attempt = 1
+            while (true) {
+                delay(RECONNECT_INTERVAL_MS)
+                _uiState.value = _uiState.value.copy(
+                    connection = ConnectionState.CHECKING,
+                    status = "자동 재연결 시도 중 ($attempt)",
+                )
+                val ok = repository.checkHealth()
+                if (ok) {
+                    onHealthResult(true)
+                    break
+                }
+                _uiState.value = _uiState.value.copy(
+                    connection = ConnectionState.OFFLINE,
+                    status = "서버 재연결 대기 중",
+                    errorText = "서버(${repository.serverLabel})에 연결하지 못했습니다. 자동으로 다시 연결을 시도합니다.",
+                )
+                attempt++
+            }
         }
     }
 
@@ -63,6 +108,7 @@ class AssistantViewModel(
         _uiState.value = _uiState.value.copy(
             status = "서버 응답을 기다리는 중",
             busy = true,
+            speaking = false,
             errorText = null,
         )
         viewModelScope.launch {
@@ -96,10 +142,12 @@ class AssistantViewModel(
     private fun onStreamError(message: String?) {
         _uiState.value = _uiState.value.copy(
             connection = ConnectionState.OFFLINE,
-            status = "연결이 끊어졌습니다",
+            status = "연결이 끊어졌습니다 - 자동 재연결 중",
             busy = false,
-            errorText = "통신 오류: ${message ?: "알 수 없는 오류"}. 다시 시도해 주세요.",
+            speaking = false,
+            errorText = "통신 오류: ${message ?: "알 수 없는 오류"}. 자동으로 다시 연결을 시도합니다.",
         )
+        startAutoReconnect()
     }
 
     private fun handleServerMessage(response: WsResponse, tts: TtsController) {
@@ -110,6 +158,8 @@ class AssistantViewModel(
         // 서버와 정상적으로 메시지를 주고받았으므로 연결 상태를 온라인으로 확정.
         if (response.type != "error") {
             _uiState.value = _uiState.value.copy(connection = ConnectionState.ONLINE)
+            reconnectJob?.cancel()
+            reconnectJob = null
         }
         when (response.type) {
             "filler" -> {
@@ -139,8 +189,12 @@ class AssistantViewModel(
 
     private fun speakAndRemember(text: String, tts: TtsController) {
         if (text.isBlank()) return
-        _uiState.value = _uiState.value.copy(lastSpokenText = text)
-        tts.speak(text)
+        _uiState.value = _uiState.value.copy(lastSpokenText = text, speaking = true)
+        tts.speak(text) {
+            viewModelScope.launch {
+                _uiState.value = _uiState.value.copy(speaking = false)
+            }
+        }
     }
 
     fun clearAwaitingOcr() {
@@ -162,5 +216,9 @@ class AssistantViewModel(
         viewModelScope.launch {
             runCatching { repository.registerDevice(token) }
         }
+    }
+
+    companion object {
+        private const val RECONNECT_INTERVAL_MS = 5_000L
     }
 }

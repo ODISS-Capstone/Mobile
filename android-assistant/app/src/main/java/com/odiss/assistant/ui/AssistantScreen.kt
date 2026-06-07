@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +59,7 @@ import com.odiss.assistant.model.MedicationInput
 import com.odiss.assistant.ocr.OcrTextExtractor
 import com.odiss.assistant.service.HandsFreeService
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -68,6 +70,9 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
     val stt = remember { SttController(context) }
     val ocr = remember { OcrTextExtractor(context) }
     val coroutineScope = rememberCoroutineScope()
+    var chatMode by remember { mutableStateOf(false) }
+    var screenListening by remember { mutableStateOf(false) }
+    var lastHeardText by remember { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         onDispose { tts.shutdown() }
@@ -123,6 +128,44 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
         if (!hasCameraPermission) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
+    LaunchedEffect(handsFreeOn, hasAudioPermission, state.busy, state.speaking) {
+        if (!handsFreeOn || !hasAudioPermission) {
+            screenListening = false
+            return@LaunchedEffect
+        }
+        // 화면이 열려 있을 때도 버튼 없이 계속 듣는다. 서버 처리/TTS 중에는 잠시 멈추고,
+        // 끝나면 자동으로 다시 듣기 상태로 돌아간다.
+        while (isActive && handsFreeOn && hasAudioPermission) {
+            if (state.busy || state.speaking) {
+                screenListening = false
+                kotlinx.coroutines.delay(300)
+                continue
+            }
+            screenListening = true
+            val text = stt.listenOnce().first().trim()
+            screenListening = false
+            if (text.isNotBlank()) {
+                lastHeardText = text
+                viewModel.onSttTextRecognized(text, tts)
+                kotlinx.coroutines.delay(700)
+            } else {
+                kotlinx.coroutines.delay(250)
+            }
+        }
+    }
+
+    if (chatMode) {
+        ChatModeScreen(
+            messages = state.messages,
+            status = state.status,
+            listening = screenListening,
+            speaking = state.speaking,
+            busy = state.busy,
+            onClose = { chatMode = false },
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -144,6 +187,9 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
 
         HandsFreeCard(
             enabled = handsFreeOn,
+            listening = screenListening,
+            speaking = state.speaking,
+            lastHeardText = lastHeardText,
             onToggle = { turnOn ->
                 if (turnOn) {
                     if (!hasAudioPermission) {
@@ -180,16 +226,20 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
             }
         }
 
-        BigActionButton(
-            label = if (state.busy) "처리 중…" else "말하기",
-            enabled = hasAudioPermission && !state.busy,
-            container = Color(0xFF1B5E20),
-        ) {
-            coroutineScope.launch {
-                val text = stt.listenOnce().first()
-                viewModel.onSttTextRecognized(text, tts)
-            }
-        }
+        VoiceStatusCard(
+            handsFreeOn = handsFreeOn,
+            listening = screenListening,
+            speaking = state.speaking,
+            busy = state.busy,
+            lastHeardText = lastHeardText,
+            hasAudioPermission = hasAudioPermission,
+            onEnable = {
+                if (!hasAudioPermission) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                handsFreeOn = true
+                prefs.handsFreeEnabled = true
+                HandsFreeService.start(context)
+            },
+        )
 
         BigActionButton(
             label = "약 직접 촬영 (카메라)",
@@ -220,13 +270,17 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
             Text("다시 듣기", fontSize = 20.sp)
         }
 
-        Text("대화 내용", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        OutlinedButton(
+            onClick = { chatMode = true },
+            enabled = state.messages.isNotEmpty(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
         ) {
-            items(state.messages) { line -> ChatBubble(line) }
+            Text("대화창 크게 보기", fontSize = 20.sp)
         }
+
+        ConversationPreview(messages = state.messages, onOpen = { chatMode = true })
     }
 }
 
@@ -269,7 +323,13 @@ private fun ConnectionCard(
 }
 
 @Composable
-private fun HandsFreeCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun HandsFreeCard(
+    enabled: Boolean,
+    listening: Boolean,
+    speaking: Boolean,
+    lastHeardText: String,
+    onToggle: (Boolean) -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -287,7 +347,12 @@ private fun HandsFreeCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
                 Text("핸즈프리 음성비서", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Text(
                     if (enabled) {
-                        "켜짐 · ‘오디스’라고 부른 뒤 말씀하세요. 앱을 닫아도 동작합니다."
+                        when {
+                            listening -> "켜짐 · 지금 듣는 중입니다. 버튼 없이 바로 말씀하세요."
+                            speaking -> "켜짐 · 답변을 읽어드리는 중입니다."
+                            lastHeardText.isNotBlank() -> "켜짐 · 마지막 인식: $lastHeardText"
+                            else -> "켜짐 · 앱을 닫아도 대기하고, 화면에서는 자동으로 듣습니다."
+                        }
                     } else {
                         "꺼짐 · 켜면 상시 음성 인식과 자동 응답이 시작됩니다."
                     },
@@ -296,6 +361,88 @@ private fun HandsFreeCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
                 )
             }
             Switch(checked = enabled, onCheckedChange = onToggle)
+        }
+    }
+}
+
+@Composable
+private fun VoiceStatusCard(
+    handsFreeOn: Boolean,
+    listening: Boolean,
+    speaking: Boolean,
+    busy: Boolean,
+    lastHeardText: String,
+    hasAudioPermission: Boolean,
+    onEnable: () -> Unit,
+) {
+    val (title, body, color) = when {
+        !hasAudioPermission -> Triple("마이크 권한 필요", "권한을 허용해야 자동 대화가 가능합니다.", Color(0xFFFFF3CD))
+        !handsFreeOn -> Triple("자동 대화 꺼짐", "아래 버튼으로 켜면 일일이 녹음 버튼을 누르지 않아도 됩니다.", Color(0xFFF5F5F5))
+        listening -> Triple("듣는 중", "지금 말씀하세요. 인식되면 자동으로 서버에 보냅니다.", Color(0xFFE8F5E9))
+        speaking -> Triple("답변 중", "ODISS가 답변을 읽고 있습니다. 끝나면 다시 자동으로 듣습니다.", Color(0xFFE3F2FD))
+        busy -> Triple("생각하는 중", "서버 응답을 기다리고 있습니다.", Color(0xFFE3F2FD))
+        else -> Triple("자동 대화 대기", "마이크가 곧 다시 열립니다. 끊기면 자동으로 재시작합니다.", Color(0xFFE8F5E9))
+    }
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = color)) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(body, fontSize = 17.sp, color = Color(0xFF444444))
+            if (lastHeardText.isNotBlank()) {
+                Text("최근 인식: $lastHeardText", fontSize = 15.sp, color = Color(0xFF666666))
+            }
+            if (!handsFreeOn || !hasAudioPermission) {
+                Button(onClick = onEnable, modifier = Modifier.fillMaxWidth().height(58.dp)) {
+                    Text("자동 대화 켜기", fontSize = 20.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationPreview(messages: List<ChatLine>, onOpen: () -> Unit) {
+    if (messages.isEmpty()) return
+    Text("최근 대화", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    val recent = messages.takeLast(3)
+    Card(modifier = Modifier.fillMaxWidth(), onClick = onOpen) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            recent.forEach { line -> ChatBubble(line) }
+            Text("눌러서 전체 대화창 보기", fontSize = 14.sp, color = Color(0xFF666666))
+        }
+    }
+}
+
+@Composable
+private fun ChatModeScreen(
+    messages: List<ChatLine>,
+    status: String,
+    listening: Boolean,
+    speaking: Boolean,
+    busy: Boolean,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("ODISS 대화창", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = onClose) { Text("닫기") }
+        }
+        val subtitle = when {
+            listening -> "듣는 중"
+            speaking -> "답변 중"
+            busy -> "생각하는 중"
+            else -> status
+        }
+        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))) {
+            Text(subtitle, modifier = Modifier.padding(14.dp), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(messages) { line -> ChatBubble(line) }
         }
     }
 }

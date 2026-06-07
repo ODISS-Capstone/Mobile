@@ -123,6 +123,9 @@ class HandsFreeService : Service() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.KOREAN.toLanguageTag())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2_500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
         }
         listening = true
         runCatching { recognizer?.startListening(intent) }
@@ -195,7 +198,9 @@ class HandsFreeService : Service() {
 
     private fun handleTranscript(text: String) {
         if (destroyed) return
-        val active = SystemClock.elapsedRealtime() < activeConversationUntil
+        // 핸즈프리 ON 상태에서는 사용자가 매번 버튼/웨이크워드를 말하지 않아도
+        // 실제 자동 대화로 이어지게 한다. 웨이크워드는 여전히 "네, 말씀하세요" 흐름에 사용된다.
+        val active = prefs.handsFreeEnabled || SystemClock.elapsedRealtime() < activeConversationUntil
         when (VoiceIntentClassifier.classify(text, active)) {
             VoiceIntent.NONE -> startListening()
 
