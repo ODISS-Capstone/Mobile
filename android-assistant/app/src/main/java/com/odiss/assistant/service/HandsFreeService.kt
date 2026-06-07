@@ -10,15 +10,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.MediaRecorder
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -37,13 +34,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
-import java.util.Locale
+import java.io.File
 
 /**
  * 시리/빅스비 형태의 상시 음성비서를 구동하는 포그라운드 서비스.
  *
  * - 알림이 떠 있는 동안 앱 UI를 닫아도 계속 동작한다(핸즈프리).
- * - 내장 SpeechRecognizer 를 반복 호출해 웨이크워드("오디스") 및 발화를 인식한다.
+ * - MediaRecorder로 짧게 녹음한 뒤 ai-server Gemini STT로 전사한다.
  * - 질의는 WebSocket(/ws/chat)으로 보내고, 응답은 TTS로 자동 재생한다.
  * - 응답 후 짧은 연속 대화 창을 열어 추가 발화를 받는다(tts_plus_followup).
  * - 촬영 요청/명령 시 CaptureActivity 를 띄워 사용자 허가 후 촬영→OCR 한다.
@@ -57,11 +54,9 @@ class HandsFreeService : Service() {
     private val tts by lazy { TtsController(this) }
     private val prefs by lazy { AssistantPreferences(this) }
 
-    private var recognizer: SpeechRecognizer? = null
     private var listening = false
     private var processing = false
     private var destroyed = false
-    private var consecutiveErrors = 0
 
     /** 연속 대화 창이 열려 있는 시각(elapsedRealtime 기준). */
     private var activeConversationUntil = 0L
@@ -110,34 +105,55 @@ class HandsFreeService : Service() {
             stopSelfClean()
             return
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            handler.postDelayed({ startListening() }, 3000)
-            return
-        }
-        if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-                setRecognitionListener(recognitionListener)
-            }
-        }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.KOREAN.toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2_500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
-        }
         listening = true
-        runCatching { recognizer?.startListening(intent) }
-            .onFailure {
+        updateNotification("녹음 중")
+        scope.launch(Dispatchers.IO) {
+            val audio = runCatching { recordAudioOnce() }.getOrNull()
+            if (audio == null) {
                 listening = false
                 scheduleRestart(1000)
+                return@launch
             }
+            listening = false
+            updateNotification("Gemini 음성 인식 중")
+            val text = runCatching { repository.transcribeAudio(audio) }
+                .onFailure { Log.w(TAG, "Gemini STT failed: ${it.message}") }
+                .getOrDefault("")
+                .trim()
+            runCatching { audio.delete() }
+            handler.post {
+                if (text.isBlank()) {
+                    scheduleRestart(400)
+                } else {
+                    handleTranscript(text)
+                }
+            }
+        }
     }
 
     private fun stopListening() {
         listening = false
-        runCatching { recognizer?.cancel() }
+    }
+
+    private fun recordAudioOnce(): File {
+        val output = File.createTempFile("odiss-handsfree-", ".m4a", cacheDir)
+        val recorder = MediaRecorder().apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            setAudioEncodingBitRate(64_000)
+            setAudioSamplingRate(16_000)
+            setOutputFile(output.absolutePath)
+            prepare()
+        }
+        try {
+            recorder.start()
+            Thread.sleep(RECORDING_WINDOW_MS)
+            recorder.stop()
+        } finally {
+            recorder.release()
+        }
+        return output
     }
 
     private fun scheduleRestart(delayMs: Long) {
@@ -146,52 +162,6 @@ class HandsFreeService : Service() {
             listening = false
             startListening()
         }, delayMs)
-    }
-
-    private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) = Unit
-        override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() = Unit
-        override fun onPartialResults(partialResults: Bundle?) = Unit
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-
-        override fun onError(error: Int) {
-            listening = false
-            when (error) {
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                    stopSelfClean()
-                    return
-                }
-                SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-                -> {
-                    consecutiveErrors = 0
-                    scheduleRestart(400)
-                }
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
-                    runCatching { recognizer?.cancel() }
-                    scheduleRestart(800)
-                }
-                else -> {
-                    consecutiveErrors++
-                    val backoff = (500L * consecutiveErrors).coerceAtMost(5000L)
-                    scheduleRestart(backoff)
-                }
-            }
-        }
-
-        override fun onResults(results: Bundle?) {
-            listening = false
-            consecutiveErrors = 0
-            val text = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                ?.trim()
-                .orEmpty()
-            handleTranscript(text)
-        }
     }
 
     // endregion
@@ -398,8 +368,6 @@ class HandsFreeService : Service() {
         prefs.handsFreeEnabled = false
         destroyed = true
         stopListening()
-        runCatching { recognizer?.destroy() }
-        recognizer = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -408,8 +376,6 @@ class HandsFreeService : Service() {
         destroyed = true
         handler.removeCallbacksAndMessages(null)
         stopListening()
-        runCatching { recognizer?.destroy() }
-        recognizer = null
         runCatching { tts.shutdown() }
         scope.cancel()
         super.onDestroy()
@@ -422,6 +388,7 @@ class HandsFreeService : Service() {
         private const val CHANNEL_ONGOING = "odiss_handsfree"
         private const val CHANNEL_CAPTURE = "odiss_capture"
         private const val CONVERSATION_WINDOW_MS = 12_000L
+        private const val RECORDING_WINDOW_MS = 4_500L
 
         const val ACTION_STOP = "com.odiss.assistant.action.STOP_HANDSFREE"
 

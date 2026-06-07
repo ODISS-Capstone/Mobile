@@ -2,10 +2,15 @@ package com.odiss.assistant.net
 
 import com.odiss.assistant.model.DeviceRegisterRequest
 import com.odiss.assistant.model.OcrAnalyzeRequest
+import com.odiss.assistant.model.SttTranscribeResponse
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Multipart
 import retrofit2.http.POST
+import retrofit2.http.Part
 
 interface OdissApiService {
     @GET("/health")
@@ -19,4 +24,12 @@ interface OdissApiService {
 
     @POST("/api/stt/log")
     suspend fun sendSttLog(@Body payload: Map<String, Any>): Response<Map<String, Any>>
+
+    @Multipart
+    @POST("/api/stt/transcribe")
+    suspend fun transcribeAudio(
+        @Part file: MultipartBody.Part,
+        @Part("speaker_id") speakerId: RequestBody,
+        @Part("language") language: RequestBody,
+    ): Response<SttTranscribeResponse>
 }

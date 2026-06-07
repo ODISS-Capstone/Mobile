@@ -10,9 +10,14 @@ import com.odiss.assistant.net.OdissWsClient
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.flow.Flow
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class OdissRepository(
@@ -47,6 +52,18 @@ class OdissRepository(
     }.getOrDefault(false)
 
     fun sendStt(text: String): Flow<WsResponse> = wsClient.sendStt(text)
+
+    suspend fun transcribeAudio(file: File): String {
+        val audioBody = file.asRequestBody("audio/mp4".toMediaType())
+        val part = MultipartBody.Part.createFormData("file", file.name, audioBody)
+        val speaker = speakerId.toRequestBody("text/plain".toMediaType())
+        val language = "ko-KR".toRequestBody("text/plain".toMediaType())
+        val response = api.transcribeAudio(part, speaker, language)
+        if (!response.isSuccessful) {
+            error("Gemini STT failed: ${response.code()}")
+        }
+        return response.body()?.text.orEmpty().trim()
+    }
 
     fun sendOcrResult(
         rawText: String,

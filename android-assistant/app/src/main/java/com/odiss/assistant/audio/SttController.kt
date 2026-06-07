@@ -1,63 +1,48 @@
 package com.odiss.assistant.audio
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import kotlinx.coroutines.channels.awaitClose
+import android.media.MediaRecorder
+import com.odiss.assistant.data.OdissRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import java.util.Locale
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
+import java.io.File
 
-class SttController(private val context: Context) {
-    fun listenOnce(): Flow<String> = callbackFlow {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            trySend("")
-            close()
-            return@callbackFlow
-        }
-        val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        val listener = object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
-            override fun onRmsChanged(rmsdB: Float) = Unit
-            override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onEndOfSpeech() = Unit
-            override fun onError(error: Int) {
-                trySend("")
-                close()
-            }
+class SttController(
+    private val context: Context,
+    private val repository: OdissRepository = OdissRepository(),
+) {
+    fun listenOnce(durationMs: Long = DEFAULT_RECORDING_MS): Flow<String> = flow {
+        val file = recordOnce(durationMs)
+        val text = runCatching { repository.transcribeAudio(file) }
+            .getOrElse { "" }
+        runCatching { file.delete() }
+        emit(text)
+    }
 
-            override fun onResults(results: Bundle?) {
-                val text = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                    ?.trim()
-                    .orEmpty()
-                trySend(text)
-                close()
-            }
+    private suspend fun recordOnce(durationMs: Long): File = withContext(Dispatchers.IO) {
+        val output = File.createTempFile("odiss-stt-", ".m4a", context.cacheDir)
+        val recorder = MediaRecorder().apply {
+            setAudioSource(MediaRecorder.AudioSource.MIC)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            setAudioEncodingBitRate(64_000)
+            setAudioSamplingRate(16_000)
+            setOutputFile(output.absolutePath)
+            prepare()
+        }
+        try {
+            recorder.start()
+            Thread.sleep(durationMs.coerceAtLeast(1_500L))
+            recorder.stop()
+        } finally {
+            recorder.release()
+        }
+        output
+    }
 
-            override fun onPartialResults(partialResults: Bundle?) = Unit
-            override fun onEvent(eventType: Int, params: Bundle?) = Unit
-        }
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.KOREAN.toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2_500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
-        }
-        recognizer.setRecognitionListener(listener)
-        recognizer.startListening(intent)
-        awaitClose {
-            recognizer.stopListening()
-            recognizer.cancel()
-            recognizer.destroy()
-        }
+    companion object {
+        private const val DEFAULT_RECORDING_MS = 4_500L
     }
 }

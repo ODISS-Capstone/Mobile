@@ -101,7 +101,7 @@ class AssistantViewModel(
 
     fun onSttTextRecognized(text: String, tts: TtsController) {
         if (text.isBlank()) {
-            _uiState.value = _uiState.value.copy(status = "음성을 알아듣지 못했습니다", busy = false)
+            _uiState.value = _uiState.value.copy(status = "듣는 중", busy = false)
             return
         }
         appendMessage("user", text)

@@ -41,6 +41,12 @@ data class DeviceRegisterRequest(
     val app_version: String = "",
 )
 
+data class SttTranscribeResponse(
+    val success: Boolean = true,
+    val text: String = "",
+    val provider: String = "gemini",
+)
+
 /**
  * OCR 결과를 ai-server 계약(`/api/ocr/analyze` HTTP, `/ws/chat` ocr_result)에
  * 동일하게 매핑하는 단일 진입점.
