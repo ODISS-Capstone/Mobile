@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.MediaActionSound
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -44,31 +45,33 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.odiss.assistant.audio.TtsController
-import com.odiss.assistant.data.OdissRepository
-import com.odiss.assistant.ocr.MedicationParser
-import com.odiss.assistant.ocr.OcrTextExtractor
-import kotlinx.coroutines.flow.catch
+import com.odiss.assistant.core.AssistantPreferences
+import com.odiss.assistant.service.HandsFreeService
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
 
 /**
  * 사용자 허가(촬영 버튼) 후 후면 카메라로 약/처방전을 촬영하고,
- * 온디바이스 OCR을 거쳐 결과를 ai-server 로 전송하는 전용 화면.
+ * 촬영 이미지를 ai-server 로 업로드하고 서버 단위 OCR/복약 처리를 수행하는 전용 화면.
  *
  * 핸즈프리 서비스가 ocr_request/음성명령을 받았을 때 이 화면을 띄워
  * "허가를 구하고 촬영" 하는 흐름을 충족한다.
  */
 class CaptureActivity : ComponentActivity() {
 
-    private val repository by lazy { OdissRepository() }
-    private val ocr by lazy { OcrTextExtractor(this) }
     private val tts by lazy { TtsController(this) }
+    private val prefs by lazy { AssistantPreferences(this) }
     private val captureExecutor = Executors.newSingleThreadExecutor()
+    private val cameraSound by lazy { MediaActionSound() }
 
     private var imageCapture: ImageCapture? = null
+    private var promptSpoken = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pauseHandsFreeIfNeeded()
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -90,6 +93,13 @@ class CaptureActivity : ComponentActivity() {
         var status by remember { mutableStateOf("약 또는 처방전을 화면에 맞추고 ‘촬영’을 눌러 주세요.") }
         var working by remember { mutableStateOf(false) }
 
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            if (!promptSpoken) {
+                promptSpoken = true
+                tts.speak("약 봉투나 처방전을 카메라에 비추고 촬영 버튼을 눌러 주세요.")
+            }
+        }
+
         val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission(),
         ) { granted ->
@@ -104,8 +114,18 @@ class CaptureActivity : ComponentActivity() {
             if (!hasCamera) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
 
-        Column(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("약·처방전 촬영", fontSize = 20.sp)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(320.dp),
+            ) {
                 if (hasCamera) {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
@@ -123,9 +143,7 @@ class CaptureActivity : ComponentActivity() {
             }
 
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(status, fontSize = 18.sp)
@@ -135,9 +153,12 @@ class CaptureActivity : ComponentActivity() {
                             working = true
                             status = "촬영 중…"
                             capturePhoto(
-                                onResult = { text ->
-                                    status = "약 정보를 서버로 보내는 중…"
-                                    submit(text) { finish() }
+                                onResult = { imageFile ->
+                                    status = "촬영 완료. 분석하는 동안 대화를 이어갈게요."
+                                    tts.speak("촬영했어요. 분석하는 동안 계속 도와드릴게요.") {
+                                        runOnUiThread { finish() }
+                                    }
+                                    handOffToHandsFree(imageFile)
                                 },
                                 onError = { msg ->
                                     working = false
@@ -185,7 +206,7 @@ class CaptureActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun capturePhoto(onResult: (String) -> Unit, onError: (String) -> Unit) {
+    private fun capturePhoto(onResult: (File) -> Unit, onError: (String) -> Unit) {
         val capture = imageCapture ?: run {
             onError("카메라 준비 안 됨")
             return
@@ -194,6 +215,7 @@ class CaptureActivity : ComponentActivity() {
             captureExecutor,
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
+                    runCatching { cameraSound.play(MediaActionSound.SHUTTER_CLICK) }
                     val bitmap = runCatching { imageProxyToBitmap(image) }.getOrNull()
                     image.close()
                     if (bitmap == null) {
@@ -201,8 +223,8 @@ class CaptureActivity : ComponentActivity() {
                         return
                     }
                     lifecycleScope.launch {
-                        val text = ocr.extract(bitmap)
-                        onResult(text)
+                        val file = bitmap.toTempJpeg()
+                        onResult(file)
                     }
                 }
 
@@ -213,21 +235,20 @@ class CaptureActivity : ComponentActivity() {
         )
     }
 
-    private fun submit(rawText: String, onDone: () -> Unit) {
-        val meds = MedicationParser.parse(rawText)
-        lifecycleScope.launch {
-            repository.sendOcrResult(rawText, meds, confidence = 0.8)
-                .catch { e ->
-                    Log.w(TAG, "ocr ws error: ${e.message}")
-                    tts.speak("서버로 보내지 못했습니다. 다시 시도해 주세요.")
-                }
-                .collect { response ->
-                    val spoken = (response.response_text ?: response.text ?: response.message).orEmpty()
-                    if (response.requires_tts && spoken.isNotBlank()) tts.speak(spoken)
-                }
-            runCatching { repository.submitOcr(rawText, meds, confidence = 0.8) }
-            onDone()
+    private fun handOffToHandsFree(imageFile: File) {
+        if (prefs.handsFreeEnabled) {
+            HandsFreeService.processCapturedImage(this, imageFile.absolutePath)
+        } else {
+            HandsFreeService.startCaptureAnalysis(this, imageFile.absolutePath)
         }
+    }
+
+    private fun pauseHandsFreeIfNeeded() {
+        if (prefs.handsFreeEnabled) HandsFreeService.pauseForCapture(this)
+    }
+
+    private fun resumeHandsFreeIfNeeded() {
+        // OCR 처리는 HandsFreeService가 이어받아 끝낸 뒤 직접 재개한다.
     }
 
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
@@ -241,9 +262,30 @@ class CaptureActivity : ComponentActivity() {
         return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
     }
 
+    private fun Bitmap.toTempJpeg(): File {
+        val file = File.createTempFile("odiss-ocr-", ".jpg", cacheDir)
+        val resized = resizeForUpload(maxSide = 1280)
+        FileOutputStream(file).use { out ->
+            resized.compress(Bitmap.CompressFormat.JPEG, 82, out)
+        }
+        if (resized !== this) resized.recycle()
+        return file
+    }
+
+    private fun Bitmap.resizeForUpload(maxSide: Int): Bitmap {
+        val longest = maxOf(width, height)
+        if (longest <= maxSide) return this
+        val scale = maxSide.toFloat() / longest.toFloat()
+        val targetWidth = (width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
+    }
+
     override fun onDestroy() {
         captureExecutor.shutdown()
+        runCatching { cameraSound.release() }
         runCatching { tts.shutdown() }
+        resumeHandsFreeIfNeeded()
         super.onDestroy()
     }
 

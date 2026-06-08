@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.ODISSAssistant" parent="@android:style/Theme.DeviceDefault.DayNight" />
+
+    <!-- 카메라 촬영 화면을 전체 화면 대신 팝업(플로팅 다이얼로그)으로 띄운다. -->
+    <style name="Theme.ODISSAssistant.Capture" parent="@android:style/Theme.DeviceDefault.Dialog">
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowCloseOnTouchOutside">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
 </resources>

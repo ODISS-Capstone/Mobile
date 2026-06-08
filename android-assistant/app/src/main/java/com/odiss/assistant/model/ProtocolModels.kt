@@ -33,6 +33,15 @@ data class OcrAnalyzeRequest(
     val speaker_id: String?,
 )
 
+data class OcrImageAnalyzeResponse(
+    val success: Boolean = true,
+    val message: String = "",
+    val response_text: String = "",
+    val medication_count: Int = 0,
+    val raw_text: String = "",
+    val needs_recapture: Boolean = false,
+)
+
 data class DeviceRegisterRequest(
     val device_id: String,
     val speaker_id: String,
@@ -44,7 +53,16 @@ data class DeviceRegisterRequest(
 data class SttTranscribeResponse(
     val success: Boolean = true,
     val text: String = "",
-    val provider: String = "gemini",
+    val provider: String = "unknown",
+    val model: String = "",
+    val audio_bytes: Int = 0,
+)
+
+data class SttTranscript(
+    val text: String = "",
+    val provider: String = "unknown",
+    val model: String = "",
+    val audioBytes: Int = 0,
 )
 
 /**

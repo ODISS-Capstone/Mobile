@@ -2,6 +2,7 @@ package com.odiss.assistant.net
 
 import com.odiss.assistant.model.DeviceRegisterRequest
 import com.odiss.assistant.model.OcrAnalyzeRequest
+import com.odiss.assistant.model.OcrImageAnalyzeResponse
 import com.odiss.assistant.model.SttTranscribeResponse
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
@@ -18,6 +19,13 @@ interface OdissApiService {
 
     @POST("/api/ocr/analyze")
     suspend fun submitOcr(@Body payload: OcrAnalyzeRequest): Response<Map<String, Any>>
+
+    @Multipart
+    @POST("/api/ocr/analyze-image")
+    suspend fun analyzeOcrImage(
+        @Part file: MultipartBody.Part,
+        @Part("speaker_id") speakerId: RequestBody,
+    ): Response<OcrImageAnalyzeResponse>
 
     @POST("/api/devices/register")
     suspend fun registerDevice(@Body payload: DeviceRegisterRequest): Response<Map<String, Any>>

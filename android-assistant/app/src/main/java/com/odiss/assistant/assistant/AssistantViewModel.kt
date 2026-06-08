@@ -3,9 +3,11 @@ package com.odiss.assistant.assistant
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.odiss.assistant.audio.TtsController
+import com.odiss.assistant.core.ConversationStore
 import com.odiss.assistant.data.OdissRepository
 import com.odiss.assistant.model.MedicationInput
 import com.odiss.assistant.model.WsResponse
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +41,25 @@ class AssistantViewModel(
 
     init {
         refreshHealth()
+        observeHandsFreeConversation()
+    }
+
+    /** 백그라운드 핸즈프리 서비스의 대화/상태를 chat 모드 화면에 반영한다. */
+    private fun observeHandsFreeConversation() {
+        viewModelScope.launch {
+            ConversationStore.messages.collect { entries ->
+                _uiState.value = _uiState.value.copy(
+                    messages = entries.map { ChatLine(it.role, it.text) },
+                )
+            }
+        }
+        viewModelScope.launch {
+            ConversationStore.status.collect { status ->
+                if (status.isNotBlank() && !_uiState.value.busy) {
+                    _uiState.value = _uiState.value.copy(status = status)
+                }
+            }
+        }
     }
 
     /** 서버 연결 상태 확인 (앱 시작 / 재시도 버튼 / 자동 재연결). */
@@ -131,6 +152,28 @@ class AssistantViewModel(
         }
     }
 
+    fun sendOcrImage(imageFile: File, tts: TtsController) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(status = "서버에서 사진을 읽는 중", busy = true, errorText = null)
+            runCatching {
+                val response = repository.analyzeOcrImage(imageFile)
+                val spoken = response.response_text.ifBlank { response.message }
+                if (spoken.isNotBlank()) {
+                    appendMessage("odiss", spoken)
+                    speakAndRemember(spoken, tts)
+                }
+                _uiState.value = _uiState.value.copy(
+                    status = if (response.needs_recapture) "다시 촬영이 필요합니다" else "OCR 처리 완료",
+                    awaitingOcr = response.needs_recapture,
+                    busy = false,
+                )
+            }.onFailure { e ->
+                onStreamError(e.message)
+            }
+            runCatching { imageFile.delete() }
+        }
+    }
+
     /** "다시 듣기" — 마지막 음성 응답을 다시 재생. */
     fun repeatLast(tts: TtsController) {
         val last = _uiState.value.lastSpokenText
@@ -206,10 +249,8 @@ class AssistantViewModel(
     }
 
     private fun appendMessage(role: String, text: String) {
-        val line = ChatLine(role, text)
-        _uiState.value = _uiState.value.copy(
-            messages = (_uiState.value.messages + line).takeLast(30),
-        )
+        // 단일 소스: 공유 스토어에 적재하면 observeHandsFreeConversation 이 uiState.messages 로 반영.
+        ConversationStore.post(role, text)
     }
 
     fun registerPushToken(token: String) {

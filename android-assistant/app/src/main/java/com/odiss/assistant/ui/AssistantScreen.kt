@@ -3,7 +3,6 @@ package com.odiss.assistant.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,24 +50,19 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.odiss.assistant.assistant.AssistantViewModel
 import com.odiss.assistant.assistant.ChatLine
 import com.odiss.assistant.assistant.ConnectionState
-import com.odiss.assistant.audio.SttController
 import com.odiss.assistant.audio.TtsController
 import com.odiss.assistant.capture.CaptureActivity
 import com.odiss.assistant.core.AssistantPreferences
 import com.odiss.assistant.model.MedicationInput
-import com.odiss.assistant.ocr.OcrTextExtractor
 import com.odiss.assistant.service.HandsFreeService
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
     val tts = remember { TtsController(context) }
-    val stt = remember { SttController(context) }
-    val ocr = remember { OcrTextExtractor(context) }
     val coroutineScope = rememberCoroutineScope()
     var chatMode by remember { mutableStateOf(false) }
     var screenListening by remember { mutableStateOf(false) }
@@ -110,15 +104,14 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
             return@rememberLauncherForActivityResult
         }
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        if (bitmap == null) {
+        if (bytes.isEmpty()) {
             viewModel.clearAwaitingOcr()
             return@rememberLauncherForActivityResult
         }
         coroutineScope.launch {
-            val text = ocr.extract(bitmap)
-            val meds = parseMedicationFromRaw(text)
-            viewModel.sendOcrPayload(text, meds, tts)
+            val file = File.createTempFile("odiss-picked-ocr-", ".jpg", context.cacheDir)
+            file.writeBytes(bytes)
+            viewModel.sendOcrImage(file, tts)
             viewModel.clearAwaitingOcr()
         }
     }
@@ -128,30 +121,9 @@ fun AssistantScreen(viewModel: AssistantViewModel = viewModel()) {
         if (!hasCameraPermission) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    LaunchedEffect(handsFreeOn, hasAudioPermission, state.busy, state.speaking) {
-        if (!handsFreeOn || !hasAudioPermission) {
-            screenListening = false
-            return@LaunchedEffect
-        }
-        // 화면이 열려 있을 때도 버튼 없이 계속 듣는다. 서버 처리/TTS 중에는 잠시 멈추고,
-        // 끝나면 자동으로 다시 듣기 상태로 돌아간다.
-        while (isActive && handsFreeOn && hasAudioPermission) {
-            if (state.busy || state.speaking) {
-                screenListening = false
-                kotlinx.coroutines.delay(300)
-                continue
-            }
-            screenListening = true
-            val text = stt.listenOnce().first().trim()
-            screenListening = false
-            if (text.isNotBlank()) {
-                lastHeardText = text
-                viewModel.onSttTextRecognized(text, tts)
-                kotlinx.coroutines.delay(700)
-            } else {
-                kotlinx.coroutines.delay(250)
-            }
-        }
+    LaunchedEffect(handsFreeOn) {
+        screenListening = handsFreeOn
+        if (!handsFreeOn) lastHeardText = ""
     }
 
     if (chatMode) {
@@ -378,10 +350,10 @@ private fun VoiceStatusCard(
     val (title, body, color) = when {
         !hasAudioPermission -> Triple("마이크 권한 필요", "권한을 허용해야 자동 대화가 가능합니다.", Color(0xFFFFF3CD))
         !handsFreeOn -> Triple("자동 대화 꺼짐", "아래 버튼으로 켜면 일일이 녹음 버튼을 누르지 않아도 됩니다.", Color(0xFFF5F5F5))
-        listening -> Triple("녹음 중", "지금 말씀하세요. 녹음 후 Gemini가 음성을 인식합니다.", Color(0xFFE8F5E9))
+        listening -> Triple("녹음 중", "말씀을 끝까지 듣고 조용해지면 서버가 음성을 인식합니다.", Color(0xFFE8F5E9))
         speaking -> Triple("답변 중", "ODISS가 답변을 읽고 있습니다. 끝나면 다시 자동으로 듣습니다.", Color(0xFFE3F2FD))
         busy -> Triple("생각하는 중", "서버 응답을 기다리고 있습니다.", Color(0xFFE3F2FD))
-            else -> Triple("자동 대화 대기", "마이크가 곧 다시 열리고, 음성은 서버 Gemini로 인식합니다.", Color(0xFFE8F5E9))
+            else -> Triple("자동 대화 대기", "마이크가 곧 다시 열리고, 음성은 서버에서 인식합니다.", Color(0xFFE8F5E9))
     }
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = color)) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -520,3 +492,4 @@ private fun parseMedicationFromRaw(raw: String): List<MedicationInput> {
     }
     return meds
 }
+

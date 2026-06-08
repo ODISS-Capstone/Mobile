@@ -14,12 +14,18 @@ enum class VoiceIntent { WAKE_ONLY, CAPTURE, QUERY, NONE }
 
 object VoiceIntentClassifier {
     private val wakeWords = listOf(
-        "오디스", "오디스야", "오디써", "오디씨", "오디서", "odiss", "오디스님",
+        "오디스", "오디스야", "오디써", "오디씨", "오디서", "오디즈", "오디쓰",
+        "우디스", "우디즈", "우디", "우디야", "우디서",
+        "워디스", "워디즈", "워디", "워디서",
+        "아디스", "아디즈", "아디",
+        "어디스", "어딧스", "어디쓰", "어디즈", "어디서",
+        "odiss", "오디스님",
     )
     private val captureWords = listOf(
         "약 찍어", "약찍어", "사진 찍어", "사진찍어", "처방전 찍어", "처방전찍어",
         "약 촬영", "사진 촬영", "촬영해", "찍어 줘", "찍어줘", "약 보여줄게",
-        "약 사진", "처방전 사진",
+        "약 사진", "처방전 사진", "약봉투", "약 봉투", "약봉지", "약 봉지",
+        "약뽕뚜", "약봉뚜", "약봉투 사진", "약봉투 한번",
     )
 
     private fun normalize(raw: String): String = raw.trim().lowercase()

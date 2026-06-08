@@ -1,9 +1,12 @@
 package com.odiss.assistant.data
 
 import com.odiss.assistant.BuildConfig
+import com.odiss.assistant.core.DeviceIdentity
 import com.odiss.assistant.model.DeviceRegisterRequest
 import com.odiss.assistant.model.MedicationInput
+import com.odiss.assistant.model.OcrImageAnalyzeResponse
 import com.odiss.assistant.model.OcrPayloadMapper
+import com.odiss.assistant.model.SttTranscript
 import com.odiss.assistant.model.WsResponse
 import com.odiss.assistant.net.OdissApiService
 import com.odiss.assistant.net.OdissWsClient
@@ -24,7 +27,7 @@ class OdissRepository(
     private val httpBaseUrl: String = BuildConfig.ODISS_HTTP_BASE_URL,
     private val wsBaseUrl: String = BuildConfig.ODISS_WS_BASE_URL,
     private val wsToken: String = BuildConfig.ODISS_WS_TOKEN,
-    private val speakerId: String = BuildConfig.ODISS_SPEAKER_ID,
+    private val speakerId: String = DeviceIdentity.speakerId,
 ) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -53,16 +56,37 @@ class OdissRepository(
 
     fun sendStt(text: String): Flow<WsResponse> = wsClient.sendStt(text)
 
-    suspend fun transcribeAudio(file: File): String {
+    fun sendCompanionPrompt(text: String): Flow<WsResponse> = wsClient.sendCompanionPrompt(text)
+
+    suspend fun transcribeAudioDebug(file: File): SttTranscript {
         val audioBody = file.asRequestBody("audio/mp4".toMediaType())
         val part = MultipartBody.Part.createFormData("file", file.name, audioBody)
         val speaker = speakerId.toRequestBody("text/plain".toMediaType())
         val language = "ko-KR".toRequestBody("text/plain".toMediaType())
         val response = api.transcribeAudio(part, speaker, language)
         if (!response.isSuccessful) {
-            error("Gemini STT failed: ${response.code()}")
+            error("STT failed: ${response.code()}")
         }
-        return response.body()?.text.orEmpty().trim()
+        val body = response.body()
+        return SttTranscript(
+            text = body?.text.orEmpty().trim(),
+            provider = body?.provider.orEmpty().ifBlank { "unknown" },
+            model = body?.model.orEmpty(),
+            audioBytes = body?.audio_bytes ?: 0,
+        )
+    }
+
+    suspend fun transcribeAudio(file: File): String = transcribeAudioDebug(file).text
+
+    suspend fun analyzeOcrImage(file: File): OcrImageAnalyzeResponse {
+        val imageBody = file.asRequestBody("image/jpeg".toMediaType())
+        val part = MultipartBody.Part.createFormData("file", file.name, imageBody)
+        val speaker = speakerId.toRequestBody("text/plain".toMediaType())
+        val response = api.analyzeOcrImage(part, speaker)
+        if (!response.isSuccessful) {
+            error("Server OCR failed: ${response.code()}")
+        }
+        return response.body() ?: OcrImageAnalyzeResponse(success = false, message = "서버 OCR 응답이 비어 있습니다.")
     }
 
     fun sendOcrResult(

@@ -14,6 +14,7 @@
         android:required="false" />
 
     <application
+        android:name=".OdissApp"
         android:allowBackup="true"
         android:icon="@android:drawable/ic_btn_speak_now"
         android:label="ODISS Assistant"
@@ -59,9 +60,10 @@
             android:name=".capture.CaptureActivity"
             android:exported="false"
             android:launchMode="singleTask"
+            android:excludeFromRecents="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:theme="@style/Theme.ODISSAssistant" />
+            android:theme="@style/Theme.ODISSAssistant.Capture" />
     </application>
 
 </manifest>
