@@ -35,6 +35,17 @@ class OdissWsClient(
     @Volatile private var webSocket: WebSocket? = null
     @Volatile private var connectionReady: CompletableDeferred<Unit>? = null
 
+    /**
+     * 서버가 임의 시점에 push하는 메시지(복약 알림 등) 핸들러.
+     * 턴 진행 중이 아닐 때 도착한 reminder가 채널에 묻히지 않도록 즉시 전달한다.
+     */
+    @Volatile var onPushMessage: ((WsResponse) -> Unit)? = null
+
+    /** 유휴 상태에서도 서버 push(알림)를 받을 수 있게 소켓을 미리 연결한다. */
+    fun ensureConnected() {
+        connectIfNeeded()
+    }
+
     fun sendStt(text: String): Flow<WsResponse> = sendTurn(
         request = WsRequest(
             type = "stt_result",
@@ -123,6 +134,14 @@ class OdissWsClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val parsed = responseAdapter.fromJson(text) ?: WsResponse(type = "error", message = "invalid_json")
+                // 서버 주도 push(예약된 복약 알림)는 턴 응답 스트림과 분리해 즉시 처리한다.
+                if (parsed.type == "reminder") {
+                    val handler = onPushMessage
+                    if (handler != null) {
+                        handler(parsed)
+                        return
+                    }
+                }
                 inbound.trySend(parsed)
             }
 

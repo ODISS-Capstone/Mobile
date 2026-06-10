@@ -83,6 +83,22 @@ class HandsFreeService : Service() {
         super.onCreate()
         createChannels()
         startAudioProcessor()
+        // 서버가 예약 시각에 push하는 복약 알림을 유휴 상태에서도 받아 즉시 음성으로 안내한다.
+        repository.listenForServerPush { response -> handler.post { handleServerPush(response) } }
+    }
+
+    /** 서버 주도 push(복약 알림). 사용자의 응답("먹었어")을 받기 위해 대화 창을 연다. */
+    private fun handleServerPush(response: WsResponse) {
+        if (destroyed) return
+        val spoken = (response.response_text ?: response.text ?: response.message).orEmpty()
+        if (spoken.isBlank()) return
+        Log.i(TAG, "server push reminder: ${spoken.take(80)}")
+        ConversationStore.post("odiss", spoken)
+        updateNotification("복약 알림")
+        markActiveConversation()
+        tts.speak(spoken) {
+            if (!processing) startListening()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -142,6 +158,11 @@ class HandsFreeService : Service() {
         if (!prefs.handsFreeEnabled) return
         if (!hasMicPermission()) {
             stopSelfClean()
+            return
+        }
+        if (tts.isSpeaking) {
+            // 자기 TTS를 녹음해 서버로 보내는 메아리 루프 방지: 재생이 끝날 때까지 대기.
+            scheduleRestart(TTS_GATE_RETRY_MS)
             return
         }
         restartGeneration++
@@ -317,7 +338,8 @@ class HandsFreeService : Service() {
             }
 
             "response", "identity_check", "reminder", "ocr_processed" -> {
-                markActiveConversation()
+                // 주의: 어시스턴트 응답으로는 대화 창을 연장하지 않는다.
+                // 3분간 '사용자 발화'가 없으면 웨이크워드 모드로 복귀해야 한다.
                 updateNotification("핸즈프리 대기 중")
                 val say = spoken.ifBlank { "" }
                 if (response.requires_tts && say.isNotBlank()) {
@@ -345,7 +367,6 @@ class HandsFreeService : Service() {
             // wake_word_ack/smalltalk 등 그 외 타입도 읽을 텍스트가 있으면 바로 말한다.
             else -> {
                 if (response.requires_tts && spoken.isNotBlank()) {
-                    markActiveConversation()
                     updateNotification("핸즈프리 대기 중")
                     ConversationStore.post("odiss", spoken)
                     tts.speak(spoken) {
@@ -538,6 +559,7 @@ class HandsFreeService : Service() {
         private const val CONVERSATION_WINDOW_MS = 3 * 60 * 1000L
         private const val FAST_RECORD_RESTART_MS = 80L
         private const val NO_SPEECH_RETRY_MS = 900L
+        private const val TTS_GATE_RETRY_MS = 250L
         private const val BLANK_STT_RETRY_MS = 900L
 
         const val ACTION_STOP = "com.odiss.assistant.action.STOP_HANDSFREE"

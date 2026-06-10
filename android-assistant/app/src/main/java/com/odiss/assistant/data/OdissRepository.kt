@@ -49,6 +49,12 @@ class OdissRepository(
 
     val serverLabel: String get() = httpBaseUrl
 
+    /** 서버 주도 push(예약된 복약 알림 등) 수신 핸들러를 등록하고 소켓을 미리 연결한다. */
+    fun listenForServerPush(handler: (WsResponse) -> Unit) {
+        wsClient.onPushMessage = handler
+        wsClient.ensureConnected()
+    }
+
     /** 앱 시작 시 서버 연결성 확인. 성공 시 true. */
     suspend fun checkHealth(): Boolean = runCatching {
         api.health().isSuccessful

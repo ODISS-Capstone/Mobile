@@ -6,6 +6,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -17,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class OdissFirebaseMessagingService : FirebaseMessagingService() {
 
@@ -55,6 +58,35 @@ class OdissFirebaseMessagingService : FirebaseMessagingService() {
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(this).notify((System.currentTimeMillis() % 100000).toInt(), notification)
+
+        // AI 스피커 동작: WebSocket이 끊긴 상태로 도착한 알림도 음성으로 직접 안내한다.
+        if (data["tts"] != "0") {
+            speakOnce(body)
+        }
+    }
+
+    /** 일회성 TTS. 서비스가 죽어 있어도 알림 본문을 소리내어 읽는다. */
+    private fun speakOnce(text: String) {
+        var tts: TextToSpeech? = null
+        tts = TextToSpeech(applicationContext) { status ->
+            if (status != TextToSpeech.SUCCESS) {
+                tts?.shutdown()
+                return@TextToSpeech
+            }
+            tts?.language = Locale.KOREAN
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) {
+                    tts?.shutdown()
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    tts?.shutdown()
+                }
+            })
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "fcm-reminder-${System.currentTimeMillis()}")
+        }
     }
 
     /**
